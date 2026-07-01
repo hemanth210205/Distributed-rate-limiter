@@ -1,0 +1,27 @@
+{
+  "name": "distributed-rate-limiter",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+  "start": "node src/server.js",
+  "start:fixed": "cross-env RATE_LIMIT_ALGORITHM=fixed node src/server.js",
+  "start:sliding": "cross-env RATE_LIMIT_ALGORITHM=sliding node src/server.js",
+  "start:bucket": "cross-env RATE_LIMIT_ALGORITHM=bucket node src/server.js",
+  "instance1": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3001 INSTANCE_ID=node1 node src/server.js",
+  "instance2": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3002 INSTANCE_ID=node2 node src/server.js",
+  "instance3": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3003 INSTANCE_ID=node3 node src/server.js",
+  "test": "echo \"Error: no test specified\" && exit 1"
+},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}

@@ -1,0 +1,60 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  node1:
+    build: .
+    container_name: rate-limiter-node1
+    ports:
+      - "3001:3000"
+    environment:
+      - INSTANCE_ID=node1
+      - RATE_LIMIT_ALGORITHM=fixed
+      - RATE_LIMIT=100
+      - RATE_WINDOW=10
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  node2:
+    build: .
+    container_name: rate-limiter-node2
+    ports:
+      - "3002:3000"
+    environment:
+      - INSTANCE_ID=node2
+      - RATE_LIMIT_ALGORITHM=sliding
+      - RATE_LIMIT=100
+      - RATE_WINDOW=10
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  node3:
+    build: .
+    container_name: rate-limiter-node3
+    ports:
+      - "3003:3000"
+    environment:
+      - INSTANCE_ID=node3
+      - RATE_LIMIT_ALGORITHM=bucket
+      - RATE_LIMIT=100
+      - REFILL_RATE=10
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
