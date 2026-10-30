@@ -1,4 +1,4 @@
-# Distributed Rate Limiter as a Service
+# Distributed Rate Limiter 
 
 A high-throughput, distributed rate limiting service built with **Node.js**, **Redis**, and **Docker**. Implements three industry-standard algorithms using **atomic Redis Lua scripts** to ensure strict cross-node consistency — eliminating race conditions, burst overages, and synchronization delays across distributed instances.
 
