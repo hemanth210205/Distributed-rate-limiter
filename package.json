@@ -1,20 +1,38 @@
 {
   "name": "distributed-rate-limiter",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "High-throughput distributed rate limiter service with Redis and atomic Lua scripts",
+  "main": "src/server.js",
   "scripts": {
-  "start": "node src/server.js",
-  "start:fixed": "cross-env RATE_LIMIT_ALGORITHM=fixed node src/server.js",
-  "start:sliding": "cross-env RATE_LIMIT_ALGORITHM=sliding node src/server.js",
-  "start:bucket": "cross-env RATE_LIMIT_ALGORITHM=bucket node src/server.js",
-  "instance1": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3001 INSTANCE_ID=node1 node src/server.js",
-  "instance2": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3002 INSTANCE_ID=node2 node src/server.js",
-  "instance3": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3003 INSTANCE_ID=node3 node src/server.js",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
-  "keywords": [],
-  "author": "",
+    "start": "node src/server.js",
+    "start:fixed": "cross-env RATE_LIMIT_ALGORITHM=fixed node src/server.js",
+    "start:sliding": "cross-env RATE_LIMIT_ALGORITHM=sliding node src/server.js",
+    "start:bucket": "cross-env RATE_LIMIT_ALGORITHM=bucket node src/server.js",
+    "instance1": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3001 INSTANCE_ID=node1 node src/server.js",
+    "instance2": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3002 INSTANCE_ID=node2 node src/server.js",
+    "instance3": "cross-env RATE_LIMIT_ALGORITHM=fixed PORT=3003 INSTANCE_ID=node3 node src/server.js",
+    "test:sanity": "node tests/sanityTest.js",
+    "test:race:naive": "node tests/raceConditionTest.js",
+    "test:race:fixed": "node tests/raceConditionTestFixed.js",
+    "test:race:sliding": "node tests/raceConditionTestSliding.js",
+    "test:race:bucket": "node tests/raceConditionTestBucket.js",
+    "test:distributed": "node tests/distributedTest.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hemanth210205/Distributed-rate-limiter.git"
+  },
+  "keywords": [
+    "rate-limiter",
+    "distributed-systems",
+    "redis",
+    "lua",
+    "express",
+    "token-bucket",
+    "sliding-window",
+    "fixed-window"
+  ],
+  "author": "Hemanth Gunti (https://github.com/hemanth210205)",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {

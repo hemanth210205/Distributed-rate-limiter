@@ -1,66 +1,80 @@
 # Distributed Rate Limiter as a Service
 
-A high-throughput, distributed rate limiting service built with **Node.js**, **Redis**, and **Docker**. Supports three industry-standard algorithms with atomic Lua scripts ensuring cross-node consistency — no race conditions, no dropped counts.
+A high-throughput, distributed rate limiting service built with **Node.js**, **Redis**, and **Docker**. Implements three industry-standard algorithms using **atomic Redis Lua scripts** to ensure strict cross-node consistency — eliminating race conditions, burst overages, and synchronization delays across distributed instances.
 
 ---
 
-## Why This Exists
+## Features
 
-Every major API (Stripe, GitHub, Twitter) uses rate limiting to protect infrastructure from abuse and overload. This project replicates that core infrastructure primitive — built from scratch, deployable with a single command, and designed to scale horizontally.
-
----
-
-## Algorithms Supported
-
-| Algorithm | How it works | Best for |
-|---|---|---|
-| **Fixed Window** | Counts requests in a fixed time bucket (e.g. 100 req / 10s). Resets at window boundary. | Simple quota enforcement |
-| **Sliding Window** | Tracks exact request timestamps in a rolling window. No boundary burst problem. | Precise per-user limits |
-| **Token Bucket** | Bucket fills at a fixed refill rate. Requests consume tokens. Allows controlled bursting. | API throttling with burst allowance |
-
-Each algorithm is implemented as an **atomic Redis Lua script** — the increment, check, and respond cycle happens in a single Redis operation, making it safe across multiple Node instances sharing the same Redis.
+- **3 Core Algorithms**: Fixed Window Counter, Sliding Window Log, and Token Bucket.
+- **Zero Race Conditions**: Atomic execution inside Redis via custom Lua scripts (`ioredis.defineCommand`).
+- **Distributed Architecture**: Multiple independent gateway nodes sharing a single Redis state layer.
+- **Fail-Closed Resilience**: Rejects traffic (503 Service Unavailable) if Redis drops to protect upstream services.
+- **Comprehensive Test Suite**: Automated race condition benchmarks comparing non-atomic (naive) vs. atomic implementations, plus distributed multi-node tests.
+- **Production Ready**: Full Docker Compose orchestration, healthchecks, and k6 load-testing scripts.
 
 ---
 
 ## Architecture
 
 ```
-Clients
-   │
-   ▼
-┌─────────────────────────────────────────┐
-│              Docker Network             │
-│                                         │
-│  ┌──────────┐  ┌──────────┐  ┌───────┐ │
-│  │  node1   │  │  node2   │  │ node3 │ │
-│  │  :3001   │  │  :3002   │  │ :3003 │ │
-│  │  fixed   │  │ sliding  │  │bucket │ │
-│  └────┬─────┘  └────┬─────┘  └───┬───┘ │
-│       │              │             │     │
-│       └──────────────┴─────────────┘    │
-│                      │                  │
-│               ┌──────▼──────┐           │
-│               │    Redis    │           │
-│               │    :6379    │           │
-│               │ shared state│           │
-│               └─────────────┘           │
-└─────────────────────────────────────────┘
+                  Client Requests (with x-user-id)
+                                 │
+                 ┌───────────────┼───────────────┐
+                 ▼               ▼               ▼
+          ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+          │   Node 1    │ │   Node 2    │ │   Node 3    │
+          │  Port 3001  │ │  Port 3002  │ │  Port 3003  │
+          │ Fixed Window│ │Sliding Win  │ │Token Bucket │
+          └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
+                 │               │               │
+                 └───────────────┼───────────────┘
+                                 │
+                   Atomic Lua Script Execution
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │     Redis Cluster     │
+                     │       Port 6379       │
+                     │  (Shared Global State)│
+                     └───────────────────────┘
 ```
 
-All three Node instances share a single Redis. When node1 increments a counter for `user123`, node2 and node3 immediately see that updated count — this is what makes it truly distributed.
+When a request arrives at any gateway node (`node1`, `node2`, or `node3`), the node checks the user's quota directly in Redis through an atomic Lua script. Increments and quota evaluations occur inside Redis in a single event-loop cycle, ensuring immediate synchronization across all cluster nodes.
+
+---
+
+## Algorithms Supported
+
+| Algorithm | Mechanism | Best For | Lua Script |
+|---|---|---|---|
+| **Fixed Window** | Counts requests in fixed time intervals (e.g. 100 req / 10s). Resets at window boundary. | Simple rate limits, lower memory footprint | [`src/lua/fixedWindow.lua`](file:///src/lua/fixedWindow.lua) |
+| **Sliding Window** | Uses Redis Sorted Sets (`ZADD`, `ZREMRANGEBYSCORE`) to track request timestamps in a rolling window. Eliminates window-boundary burst exploits. | Strict, accurate per-user rate limiting | [`src/lua/slidingWindow.lua`](file:///src/lua/slidingWindow.lua) |
+| **Token Bucket** | Fills bucket with tokens at a steady refill rate up to maximum capacity. Consumes tokens on requests. | APIs allowing controlled burst traffic with steady sustained rates | [`src/lua/tokenBucket.lua`](file:///src/lua/tokenBucket.lua) |
+
+### The Concurrency Problem: Naive vs. Atomic
+
+A naive rate limiter uses separate `GET` and `INCR` calls:
+```javascript
+// NAIVE (RACE CONDITION RISK):
+const count = await redis.get(key);
+if (count >= limit) return false;
+await redis.incr(key); // Concurrent requests read stale count before this executes!
+```
+Under high concurrency, multiple requests read the same initial count before any of them write the increment, letting requests bypass the limit.
+
+**Our Solution**: All logic runs inside a **Redis Lua script**. Redis executes Lua scripts as a single atomic transaction. No other command or script can run concurrently on that key, completely eliminating race conditions.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Runtime | Node.js 20 |
-| Framework | Express.js |
-| Cache / State | Redis 7 |
-| Atomic Scripts | Lua (via ioredis `defineCommand`) |
-| Containerization | Docker + Docker Compose |
-| Load Testing | k6 |
+- **Runtime**: Node.js 20+
+- **Framework**: Express.js
+- **State Store**: Redis 7
+- **Redis Client**: `ioredis` (with Lua custom command definitions)
+- **Containerization**: Docker & Docker Compose
+- **Load Testing**: k6
 
 ---
 
@@ -68,158 +82,238 @@ All three Node instances share a single Redis. When node1 increments a counter f
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (recommended for containerized execution)
+- [Node.js](https://nodejs.org/) (v18+ if running locally without Docker)
+- [Redis](https://redis.io/) (v6+ if running locally without Docker)
 - [k6](https://k6.io/docs/get-started/installation/) (optional, for load testing)
 
-### Run with Docker
+---
 
-```bash
-# Clone the repo
-git clone https://github.com/hemanth-gunti/Distributed-rate-limiter.git
-cd Distributed-rate-limiter
+### Method 1: Run with Docker Compose (Recommended)
 
-# Build and start all containers (Redis + 3 Node instances)
-docker compose build
-docker compose up
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/hemanth210205/Distributed-rate-limiter.git
+   cd Distributed-rate-limiter
+   ```
 
-You should see:
+2. **Build and start the cluster:**
+   ```bash
+   docker compose up --build
+   ```
 
-```
-redis                | Ready to accept connections tcp
-rate-limiter-node1   | Gateway [node1] running on port 3000 | Algorithm: fixed
-rate-limiter-node2   | Gateway [node2] running on port 3000 | Algorithm: sliding
-rate-limiter-node3   | Gateway [node3] running on port 3000 | Algorithm: bucket
-```
+3. **Verify the services:**
+   You will see Redis initialize, followed by the three gateway instances:
+   - `rate-limiter-node1` on `http://localhost:3001` (Fixed Window)
+   - `rate-limiter-node2` on `http://localhost:3002` (Sliding Window)
+   - `rate-limiter-node3` on `http://localhost:3003` (Token Bucket)
+
+4. **Stop the cluster:**
+   ```bash
+   docker compose down
+   ```
+
+---
+
+### Method 2: Run Locally (Without Docker)
+
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+2. **Ensure Redis is running locally:**
+   ```bash
+   # Start Redis service or run via Docker
+   docker run -d --name local-redis -p 6379:6379 redis:7-alpine
+   ```
+
+3. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   ```
+
+4. **Start an instance:**
+   ```bash
+   # Default server (port 3000, fixed window)
+   npm start
+
+   # Or run specific algorithms
+   npm run start:fixed
+   npm run start:sliding
+   npm run start:bucket
+
+   # Or run dedicated instances on ports 3001, 3002, 3003
+   npm run instance1
+   npm run instance2
+   npm run instance3
+   ```
 
 ---
 
 ## API Usage
 
-All endpoints require the `x-user-id` header to identify the caller.
+All API requests require the `x-user-id` header to identify the client.
 
-### Check endpoint
+### Endpoint
 
-```
+```http
 GET /api/data
-Headers: x-user-id: <user-id>
+x-user-id: <user_identifier>
 ```
 
-**Success (200):**
-```json
-{
-  "message": "Success",
-  "algorithm": "fixed",
-  "instance": "node1",
-  "timestamp": 1782936472879
-}
-```
+#### Responses
 
-**Rate limited (429):**
-```json
-{
-  "error": "Too Many Requests"
-}
-```
+- **200 OK** — Request permitted:
+  ```json
+  {
+    "message": "Success",
+    "algorithm": "fixed",
+    "instance": "node1",
+    "timestamp": 1782936472879
+  }
+  ```
 
-**Missing header (400):**
-```json
-{
-  "error": "Missing x-user-id header"
-}
-```
+- **429 Too Many Requests** — Rate limit exceeded:
+  ```json
+  {
+    "error": "Too Many Requests"
+  }
+  ```
+  *(Response includes header `Retry-After: 1`)*
 
-### Test each node
+- **400 Bad Request** — Missing identifier header:
+  ```json
+  {
+    "error": "Missing x-user-id header"
+  }
+  ```
 
+- **503 Service Unavailable** — Redis offline (Fail-closed design):
+  ```json
+  {
+    "error": "Rate limiter unavailable"
+  }
+  ```
+
+---
+
+### Quick Testing with curl
+
+#### Test individual nodes
 ```bash
-# Fixed window (node1)
-curl -H "x-user-id: user123" http://localhost:3001/api/data
+# Node 1: Fixed Window
+curl -H "x-user-id: alice" http://localhost:3001/api/data
 
-# Sliding window (node2)
-curl -H "x-user-id: user123" http://localhost:3002/api/data
+# Node 2: Sliding Window
+curl -H "x-user-id: alice" http://localhost:3002/api/data
 
-# Token bucket (node3)
-curl -H "x-user-id: user123" http://localhost:3003/api/data
+# Node 3: Token Bucket
+curl -H "x-user-id: alice" http://localhost:3003/api/data
 ```
 
-### Trigger the rate limiter
+#### Trigger rate limiting
 
+**Bash (Linux / macOS / WSL):**
 ```bash
-# Spam 50 requests to node1 — you'll see 429s after the limit is hit
-for i in {1..50}; do curl -s -H "x-user-id: user123" http://localhost:3001/api/data; echo; done
+for i in {1..15}; do curl -s -H "x-user-id: testuser" http://localhost:3001/api/data; echo; done
+```
+
+**PowerShell (Windows):**
+```powershell
+1..15 | ForEach-Object { curl.exe -s -H "x-user-id: testuser" http://localhost:3001/api/data; Write-Host "" }
 ```
 
 ---
 
-## Configuration
+## Automated Concurrency & Distributed Tests
 
-All limits are configurable via environment variables in `docker-compose.yml`:
+The project includes built-in test scripts demonstrating race conditions and verifying distributed correctness.
 
-| Variable | Default | Description |
-|---|---|---|
-| `RATE_LIMIT_ALGORITHM` | `fixed` | Algorithm: `fixed`, `sliding`, or `bucket` |
-| `RATE_LIMIT` | `100` | Max requests allowed per window |
-| `RATE_WINDOW` | `10` | Window size in seconds |
-| `REFILL_RATE` | `10` | Tokens added per second (bucket only) |
-| `REDIS_HOST` | `127.0.0.1` | Redis hostname (`redis` inside Docker) |
-| `REDIS_PORT` | `6379` | Redis port |
+Ensure Redis is running locally (`localhost:6379`), then run:
+
+| Command | Purpose |
+|---|---|
+| `npm run test:sanity` | Verifies basic request allowance and rejection behavior. |
+| `npm run test:race:naive` | **Confirms the race condition**: Fires 20 concurrent requests with limit 5 using `GET + INCR`. Shows allowed requests exceeding the quota. |
+| `npm run test:race:fixed` | Tests atomic Fixed Window script under parallel load; confirms exactly 5 requests are permitted. |
+| `npm run test:race:sliding` | Tests atomic Sliding Window script under parallel load. |
+| `npm run test:race:bucket` | Tests atomic Token Bucket script under parallel load. |
+| `npm run test:distributed` | Fires concurrent requests across **all three ports (3001, 3002, 3003)** to verify distributed state sharing. |
 
 ---
 
 ## Load Testing with k6
 
+Simulate burst traffic and monitor latency under high load:
+
 ```bash
-# Install k6 first: https://k6.io/docs/get-started/installation/
+# Install k6 (https://k6.io/docs/get-started/installation/)
 
 # Run burst test against node1
 GATEWAY_URL=http://localhost:3001/api/data k6 run k6/burstTest.js
 ```
 
-The burst test ramps up to **500 virtual users** across 20 simulated user IDs, then ramps back down. It tracks:
-
-- `requests_allowed` — requests that passed the limiter
-- `requests_rejected` — requests that got 429'd
-- `requests_errored` — unexpected errors
-- p50, p90, p95, p99 latency
+The k6 test ramps up to **500 virtual users** across 20 distinct simulated client IDs, collecting:
+- `requests_allowed` (HTTP 200)
+- `requests_rejected` (HTTP 429)
+- `requests_errored` (Non-rate-limit errors)
+- p50, p90, p95, and p99 response latencies
 
 ---
 
-## Key Design Decisions
+## Configuration Reference
 
-**Atomic Lua scripts over GET + SET**
-A naive implementation reads the counter then increments it — two operations with a race condition window in between. Every algorithm here uses a single Lua script executed atomically by Redis, making it safe across any number of nodes.
+Configure limits via environment variables or [.env](file:///.env.example):
 
-**Fail-closed on Redis outage**
-If Redis is unavailable, the middleware returns `503 Service Unavailable` rather than allowing all traffic through. This is a deliberate tradeoff — availability vs security. In a production system this would be a configurable policy.
-
-**Per-user keying via `x-user-id`**
-In a real system this would be derived from an auth token or API key. The header approach keeps the demo clean and lets you test multiple users easily.
+| Variable | Default | Description |
+|---|---|---|
+| `RATE_LIMIT_ALGORITHM` | `fixed` | Limiter algorithm: `fixed`, `sliding`, or `bucket` |
+| `RATE_LIMIT` | `100` | Maximum requests allowed per window (or bucket capacity) |
+| `RATE_WINDOW` | `10` | Time window duration in seconds |
+| `REFILL_RATE` | `10` | Tokens added per second (Token Bucket only) |
+| `REDIS_HOST` | `127.0.0.1` | Redis host address (`redis` inside Docker network) |
+| `REDIS_PORT` | `6379` | Redis port |
+| `PORT` | `3000` | Port for the Express gateway |
+| `INSTANCE_ID` | `default` | Identifier for the running gateway instance |
 
 ---
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── algorithms/
-│   │   ├── fixedWindowLimiter.js
-│   │   ├── slidingWindowLimiter.js
-│   │   └── tokenBucketLimiter.js
-│   ├── lua/
-│   │   ├── fixedWindow.lua
-│   │   ├── slidingWindow.lua
-│   │   └── tokenBucket.lua
-│   ├── middleware/
-│   │   └── rateLimitMiddleware.js
-│   ├── config.js
-│   ├── redisClient.js
-│   └── server.js
+Distributed-rate-limiter/
+├── .env.example                     # Sample environment configuration
+├── .gitignore                       # Production git ignore definitions
+├── .dockerignore                     # Docker build exclusion rules
+├── Dockerfile                       # Multi-stage container definition
+├── docker-compose.yml               # Multi-node gateway + Redis cluster orchestration
+├── package.json                     # Project scripts and dependencies
+├── README.md                        # Documentation and architecture guide
 ├── k6/
-│   └── burstTest.js
+│   └── burstTest.js                 # k6 load and stress test script
 ├── tests/
-├── Dockerfile
-├── docker-compose.yml
-└── package.json
+│   ├── sanityTest.js                # Basic limiter behavior test
+│   ├── raceConditionTest.js         # Non-atomic race condition demonstration
+│   ├── raceConditionTestFixed.js    # Atomic Fixed Window concurrency test
+│   ├── raceConditionTestSliding.js  # Atomic Sliding Window concurrency test
+│   ├── raceConditionTestBucket.js   # Atomic Token Bucket concurrency test
+│   └── distributedTest.js           # Multi-instance cross-gateway test
+└── src/
+    ├── server.js                    # Express HTTP application
+    ├── config.js                    # Dynamic environment configuration
+    ├── redisClient.js               # Redis connection & Lua script registry
+    ├── middleware/
+    │   └── rateLimitMiddleware.js   # Rate limit check & HTTP handling
+    ├── algorithms/
+    │   ├── naiveLimiter.js          # Non-atomic limiter (educational comparison)
+    │   ├── fixedWindowLimiter.js    # Fixed Window implementation
+    │   ├── slidingWindowLimiter.js  # Sliding Window implementation
+    │   └── tokenBucketLimiter.js    # Token Bucket implementation
+    └── lua/
+        ├── fixedWindow.lua          # Atomic Fixed Window Lua script
+        ├── slidingWindow.lua        # Atomic Sliding Window Lua script
+        └── tokenBucket.lua          # Atomic Token Bucket Lua script
 ```
 
 ---
@@ -227,6 +321,10 @@ In a real system this would be derived from an auth token or API key. The header
 ## Author
 
 **Hemanth Gunti**
-- GitHub: [@hemanth-gunti](https://github.com/hemanth-gunti)
+- GitHub: [@hemanth210205](https://github.com/hemanth210205)
 
+---
 
+## License
+
+This project is licensed under the [ISC License](LICENSE).
